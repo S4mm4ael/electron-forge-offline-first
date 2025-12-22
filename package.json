@@ -37,6 +37,17 @@
     "vite": "^5.4.21"
   },
   "dependencies": {
-    "electron-squirrel-startup": "^1.0.1"
+    "@chainsafe/libp2p-gossipsub": "^14.1.2",
+    "@huggingface/transformers": "^3.8.1",
+    "@libp2p/mdns": "^12.0.10",
+    "@libp2p/tcp": "^11.0.9",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.5.0",
+    "electron-squirrel-startup": "^1.0.1",
+    "keytar": "^7.9.0",
+    "libp2p": "^3.1.2",
+    "lucide-react": "^0.562.0",
+    "web3": "^4.16.0",
+    "zustand": "^5.0.9"
   }
 }
