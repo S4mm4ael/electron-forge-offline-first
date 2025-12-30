@@ -3,6 +3,7 @@ import React from 'react';
 import { SystemHealth } from './components/SystemHealth';
 import { RAMChart } from './components/RAMChart';
 import { FileBrowser } from './components/FileBrowser';
+import { ChatInterface } from './components/ChatInterface';
 import './index.css';
 
 const App: React.FC = () => {
@@ -38,9 +39,13 @@ const App: React.FC = () => {
         gap: '20px',
         width: '100%',
         boxSizing: 'border-box',
+        overflow: 'hidden',
       }}>
-        <RAMChart />
-        <FileBrowser />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          <RAMChart />
+          <FileBrowser />
+        </div>
+        <ChatInterface />
       </main>
     </div>
   );
