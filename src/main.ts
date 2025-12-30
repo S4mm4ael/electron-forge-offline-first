@@ -186,6 +186,24 @@ ipcMain.handle('select-folder', async () => {
   }
 });
 
+// File System: Select GGUF model file
+ipcMain.handle('select-gguf-file', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [
+      { name: 'GGUF Files', extensions: ['gguf'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    title: 'Select GGUF Model File',
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  return result.filePaths[0];
+});
+
 // LLM IPC Handlers - Bridge between renderer and utility process
 
 ipcMain.handle('llm-initialize', async (event, modelPath: string) => {

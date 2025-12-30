@@ -5,6 +5,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('electronAPI', {
   getSystemStats: () => ipcRenderer.invoke('get-system-stats'),
   selectFolder: () => ipcRenderer.invoke('select-folder'),
+  selectGGUFFile: () => ipcRenderer.invoke('select-gguf-file'),
   
   // LLM methods
   llmInitialize: (modelPath: string) => ipcRenderer.invoke('llm-initialize', modelPath),
@@ -47,6 +48,7 @@ export interface ElectronAPI {
       path: string;
     }>;
   } | null>;
+  selectGGUFFile: () => Promise<string | null>;
   llmInitialize: (modelPath: string) => Promise<any>;
   llmGenerate: (prompt: string) => Promise<{ requestId: string }>;
   llmCancel: () => Promise<void>;

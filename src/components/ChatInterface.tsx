@@ -81,6 +81,18 @@ export const ChatInterface: React.FC = () => {
     };
   }, []);
 
+  const handleSelectFile = async () => {
+    try {
+      const selectedPath = await window.electronAPI.selectGGUFFile();
+      if (selectedPath) {
+        setModelPath(selectedPath);
+        setError(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to select file');
+    }
+  };
+
   const handleInitialize = async () => {
     if (!modelPath.trim()) {
       setError('Please provide a model path');
@@ -185,23 +197,43 @@ export const ChatInterface: React.FC = () => {
           ))}
         </select>
 
-        <input
-          type="text"
-          value={modelPath}
-          onChange={(e) => setModelPath(e.target.value)}
-          placeholder="Path to GGUF model file..."
-          disabled={isInitialized || isInitializing}
-          style={{
-            flex: 1,
-            minWidth: '200px',
-            padding: '8px 12px',
-            backgroundColor: '#2d2d2d',
-            color: '#fff',
-            border: '1px solid #444',
-            borderRadius: '4px',
-            fontSize: '14px',
-          }}
-        />
+        <div style={{ flex: 1, minWidth: '200px', display: 'flex', gap: '8px' }}>
+          <input
+            type="text"
+            value={modelPath}
+            onChange={(e) => setModelPath(e.target.value)}
+            placeholder="Path to GGUF model file..."
+            disabled={isInitialized || isInitializing}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              backgroundColor: '#2d2d2d',
+              color: '#fff',
+              border: '1px solid #444',
+              borderRadius: '4px',
+              fontSize: '14px',
+            }}
+          />
+          <button
+            onClick={handleSelectFile}
+            disabled={isInitialized || isInitializing}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#64B5F6',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: isInitialized || isInitializing ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              whiteSpace: 'nowrap',
+              opacity: isInitialized || isInitializing ? 0.6 : 1,
+            }}
+            title="Browse for GGUF file"
+          >
+            Browse
+          </button>
+        </div>
 
         <button
           onClick={handleInitialize}

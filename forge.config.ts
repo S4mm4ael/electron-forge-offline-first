@@ -36,8 +36,8 @@ const config: ForgeConfig = {
         },
         {
           entry: 'src/llm-process.ts',
-          config: 'vite.main.config.ts',
-          target: 'utility',
+          config: 'vite.llm-process.config.ts',
+          target: 'main',
         },
       ],
       renderer: [
