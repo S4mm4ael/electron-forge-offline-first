@@ -1,8 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import React from 'react';
 import { SystemHealth } from './components/SystemHealth';
-import { RAMChart } from './components/RAMChart';
-import { FileBrowser } from './components/FileBrowser';
 import { ChatInterface } from './components/ChatInterface';
 import './index.css';
 
@@ -41,10 +39,6 @@ const App: React.FC = () => {
         boxSizing: 'border-box',
         overflow: 'hidden',
       }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-          <RAMChart />
-          <FileBrowser />
-        </div>
         <ChatInterface />
       </main>
     </div>

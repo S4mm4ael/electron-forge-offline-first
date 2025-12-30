@@ -215,10 +215,16 @@ export const ChatInterface: React.FC = () => {
       });
       
       let repetitionDetected = false;
+      let streamAborted = false;
       
       // Stream the response
       for await (const chunk of stream) {
-        if (streamingMessageRef.current && !repetitionDetected) {
+        // If repetition was detected, stop processing chunks
+        if (repetitionDetected || streamAborted) {
+          break;
+        }
+        
+        if (streamingMessageRef.current) {
           const currentId = streamingMessageRef.current.id;
           setMessages((prev) => {
             const updated = prev
@@ -235,7 +241,9 @@ export const ChatInterface: React.FC = () => {
                   // If we see multiple "User:" or "Assistant:" patterns, stop immediately
                   if (userCount > 1 || assistantCount > 1) {
                     repetitionDetected = true;
+                    streamAborted = true;
                     setStatus('Stopped: Conversation repetition detected');
+                    setIsGenerating(false); // Immediately enable input
                     return { ...msg, content: newContent, isStreaming: false };
                   }
                   
@@ -245,7 +253,9 @@ export const ChatInterface: React.FC = () => {
                     if (newContent.length % 30 === 0 || newContent.length < 200) {
                       if (detectRepetition(newContent, messages)) {
                         repetitionDetected = true;
+                        streamAborted = true;
                         setStatus('Stopped: Repetition detected');
+                        setIsGenerating(false); // Immediately enable input
                         return { ...msg, content: newContent, isStreaming: false };
                       }
                     }
@@ -257,41 +267,66 @@ export const ChatInterface: React.FC = () => {
               });
             return updated;
           });
-          
-          // If repetition detected, break the loop
-          if (repetitionDetected) {
-            break;
-          }
         }
       }
 
-      // Generation complete
-      setIsGenerating(false);
-      setStatus(null); // Clear status on successful completion
+      // Always clean up after streaming completes (whether stopped early or completed)
+      // Only set isGenerating to false if we haven't already (to avoid race conditions)
+      if (isGenerating) {
+        setIsGenerating(false);
+      }
+      
       if (streamingMessageRef.current) {
         const currentId = streamingMessageRef.current.id;
-        setMessages((prev) =>
-          prev
-            .filter((msg) => msg !== null && msg !== undefined)
-            .map((msg) => {
-              if (msg.id === currentId) {
-                // Final check for repetition in the complete message
-                if (detectRepetition(msg.content, messages)) {
-                  setStatus('Note: Response may contain repetition');
+        
+        // If repetition was detected, we already updated the message, just finalize it
+        if (repetitionDetected) {
+          setMessages((prev) =>
+            prev
+              .filter((msg) => msg !== null && msg !== undefined)
+              .map((msg) =>
+                msg.id === currentId
+                  ? { ...msg, isStreaming: false }
+                  : msg
+              )
+          );
+        } else {
+          // Normal completion - check for repetition one final time
+          setStatus(null); // Clear status on successful completion
+          setMessages((prev) =>
+            prev
+              .filter((msg) => msg !== null && msg !== undefined)
+              .map((msg) => {
+                if (msg.id === currentId) {
+                  // Final check for repetition in the complete message
+                  if (detectRepetition(msg.content, messages)) {
+                    setStatus('Note: Response may contain repetition');
+                    return { ...msg, isStreaming: false };
+                  }
                   return { ...msg, isStreaming: false };
                 }
-                return { ...msg, isStreaming: false };
-              }
-              return msg;
-            })
-        );
+                return msg;
+              })
+          );
+        }
+        
         streamingMessageRef.current = null;
+      } else if (!repetitionDetected) {
+        // No streaming message ref but no repetition - clear status
+        setStatus(null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate response');
       setIsGenerating(false);
+      setStatus(null); // Clear status on error
       setMessages((prev) => prev.filter((msg) => msg.id !== assistantMessage.id));
       streamingMessageRef.current = null;
+    } finally {
+      // Ensure isGenerating is always false, even if something goes wrong
+      setIsGenerating(false);
+      if (streamingMessageRef.current) {
+        streamingMessageRef.current = null;
+      }
     }
   };
 
