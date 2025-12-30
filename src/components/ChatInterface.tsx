@@ -522,7 +522,16 @@ export const ChatInterface: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: '20px', backgroundColor: '#1e1e1e', borderRadius: '8px', display: 'flex', flexDirection: 'column', height: '600px' }}>
+    <div style={{ 
+      padding: '20px', 
+      backgroundColor: '#1e1e1e', 
+      borderRadius: '8px', 
+      display: 'flex', 
+      flexDirection: 'column', 
+      height: '100%',
+      minHeight: 0, // Important for flex children
+      boxSizing: 'border-box',
+    }}>
       <h3 style={{ color: '#fff', marginBottom: '15px' }}>AI Chat (Local LLM)</h3>
 
       {/* Generation Parameters */}
@@ -677,6 +686,8 @@ export const ChatInterface: React.FC = () => {
           display: 'flex',
           flexDirection: 'column',
           gap: '15px',
+          minHeight: 0, // Important for flex children to shrink properly
+          maxHeight: '100%', // Ensure it doesn't exceed parent
         }}
       >
         {messages.length === 0 ? (
