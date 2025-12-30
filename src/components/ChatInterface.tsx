@@ -30,55 +30,13 @@ export const ChatInterface: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Set up LLM event listeners
+  // Check if @electron/llm is loaded
   useEffect(() => {
-    // Listen for streaming chunks
-    window.electronAPI.llmOnChunk((chunk) => {
-      if (streamingMessageRef.current) {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === streamingMessageRef.current!.id
-              ? { ...msg, content: msg.content + chunk.text }
-              : msg
-          )
-        );
-      }
-    });
-
-    // Listen for completion/error responses
-    window.electronAPI.llmOnResponse((response) => {
-      if (response.type === 'complete') {
-        setIsGenerating(false);
-        setCurrentRequestId(null);
-        if (streamingMessageRef.current) {
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === streamingMessageRef.current!.id
-                ? { ...msg, isStreaming: false }
-                : msg
-            )
-          );
-          streamingMessageRef.current = null;
-        }
-      } else if (response.type === 'error') {
-        setIsGenerating(false);
-        setCurrentRequestId(null);
-        setError(response.payload?.error || 'An error occurred');
-        if (streamingMessageRef.current) {
-          setMessages((prev) => prev.filter((msg) => msg.id !== streamingMessageRef.current!.id));
-          streamingMessageRef.current = null;
-        }
-      } else if (response.type === 'initialized') {
-        setIsInitialized(true);
-        setIsInitializing(false);
-        setError(null);
-      }
-    });
-
-    // Cleanup on unmount
-    return () => {
-      window.electronAPI.llmRemoveListeners();
-    };
+    if ((window as any).electronAi) {
+      console.log('@electron/llm is available');
+    } else {
+      console.warn('@electron/llm not available yet');
+    }
   }, []);
 
   const handleSelectFile = async () => {
@@ -103,7 +61,25 @@ export const ChatInterface: React.FC = () => {
     setError(null);
 
     try {
-      await window.electronAPI.llmInitialize(modelPath);
+      // Use @electron/llm's window.electronAi API directly
+      const electronAi = (window as any).electronAi;
+      if (!electronAi) {
+        throw new Error('@electron/llm not loaded. Please restart the app.');
+      }
+      
+      // Register the model path with the main process
+      await window.electronAPI.llmRegisterModelPath(selectedModel.alias, modelPath);
+      
+      // Create the model using the alias
+      // @electron/llm will use getModelPath to resolve the alias to the actual file path
+      await electronAi.create({
+        modelAlias: selectedModel.alias,
+        systemPrompt: 'You are a helpful AI assistant.',
+      });
+      
+      setIsInitialized(true);
+      setIsInitializing(false);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to initialize model');
       setIsInitializing(false);
@@ -132,8 +108,46 @@ export const ChatInterface: React.FC = () => {
     streamingMessageRef.current = assistantMessage;
 
     try {
-      const { requestId } = await window.electronAPI.llmGenerate(userMessage.content);
-      setCurrentRequestId(requestId);
+      // Use @electron/llm's streaming API
+      const electronAi = (window as any).electronAi;
+      if (!electronAi) {
+        throw new Error('@electron/llm not available');
+      }
+
+      // Use promptStreaming for real-time streaming
+      const stream = await electronAi.promptStreaming(userMessage.content);
+      
+      // Stream the response
+      for await (const chunk of stream) {
+        if (streamingMessageRef.current) {
+          const currentId = streamingMessageRef.current.id;
+          setMessages((prev) =>
+            prev
+              .filter((msg) => msg !== null && msg !== undefined)
+              .map((msg) =>
+                msg.id === currentId
+                  ? { ...msg, content: msg.content + chunk }
+                  : msg
+              )
+          );
+        }
+      }
+
+      // Generation complete
+      setIsGenerating(false);
+      if (streamingMessageRef.current) {
+        const currentId = streamingMessageRef.current.id;
+        setMessages((prev) =>
+          prev
+            .filter((msg) => msg !== null && msg !== undefined)
+            .map((msg) =>
+              msg.id === currentId
+                ? { ...msg, isStreaming: false }
+                : msg
+            )
+        );
+        streamingMessageRef.current = null;
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate response');
       setIsGenerating(false);
@@ -143,20 +157,22 @@ export const ChatInterface: React.FC = () => {
   };
 
   const handleCancel = () => {
-    if (currentRequestId) {
-      window.electronAPI.llmCancel();
-      setIsGenerating(false);
-      setCurrentRequestId(null);
-      if (streamingMessageRef.current) {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === streamingMessageRef.current!.id
+    // @electron/llm doesn't have a direct cancel method in the current API
+    // We'll just stop the generation state
+    setIsGenerating(false);
+    setCurrentRequestId(null);
+    if (streamingMessageRef.current) {
+      const currentId = streamingMessageRef.current.id;
+      setMessages((prev) =>
+        prev
+          .filter((msg) => msg !== null && msg !== undefined) // Filter out null/undefined messages
+          .map((msg) =>
+            msg.id === currentId
               ? { ...msg, isStreaming: false, content: msg.content + '\n\n[Generation cancelled]' }
               : msg
           )
-        );
-        streamingMessageRef.current = null;
-      }
+      );
+      streamingMessageRef.current = null;
     }
   };
 
@@ -198,22 +214,22 @@ export const ChatInterface: React.FC = () => {
         </select>
 
         <div style={{ flex: 1, minWidth: '200px', display: 'flex', gap: '8px' }}>
-          <input
-            type="text"
-            value={modelPath}
-            onChange={(e) => setModelPath(e.target.value)}
-            placeholder="Path to GGUF model file..."
-            disabled={isInitialized || isInitializing}
-            style={{
-              flex: 1,
-              padding: '8px 12px',
-              backgroundColor: '#2d2d2d',
-              color: '#fff',
-              border: '1px solid #444',
-              borderRadius: '4px',
-              fontSize: '14px',
-            }}
-          />
+        <input
+          type="text"
+          value={modelPath}
+          onChange={(e) => setModelPath(e.target.value)}
+          placeholder="Model alias (e.g., llama-3-8b) or full path..."
+          disabled={isInitialized || isInitializing}
+          style={{
+            flex: 1,
+            padding: '8px 12px',
+            backgroundColor: '#2d2d2d',
+            color: '#fff',
+            border: '1px solid #444',
+            borderRadius: '4px',
+            fontSize: '14px',
+          }}
+        />
           <button
             onClick={handleSelectFile}
             disabled={isInitialized || isInitializing}

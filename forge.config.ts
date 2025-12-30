@@ -6,12 +6,23 @@ import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { execSync } from 'child_process';
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
   },
   rebuildConfig: {},
+  hooks: {
+    preStart: async () => {
+      // Copy @electron/llm utility and preload files before starting
+      try {
+        execSync('node scripts/copy-llm-utility.js', { stdio: 'inherit' });
+      } catch (error) {
+        console.error('Failed to copy @electron/llm files:', error);
+      }
+    },
+  },
   makers: [
     new MakerSquirrel({}),
     new MakerZIP({}, ['darwin']),
@@ -33,11 +44,6 @@ const config: ForgeConfig = {
           entry: 'src/preload.ts',
           config: 'vite.preload.config.ts',
           target: 'preload',
-        },
-        {
-          entry: 'src/llm-process.ts',
-          config: 'vite.llm-process.config.ts',
-          target: 'main',
         },
       ],
       renderer: [

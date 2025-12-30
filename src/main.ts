@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, utilityProcess, MessageChannelMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { loadElectronLlm } from '@electron/llm';
 import path from 'node:path';
 import { readdir } from 'node:fs/promises';
 import os from 'node:os';
@@ -34,74 +35,39 @@ const createWindow = () => {
   mainWindow.webContents.openDevTools();
 };
 
-// LLM Utility Process Setup
-let llmProcess: utilityProcess.UtilityProcess | null = null;
-let llmMessagePort: MessageChannelMain['port1'] | null = null;
-let llmMessagePort2: MessageChannelMain['port2'] | null = null;
+// LLM Setup - @electron/llm handles utility process internally
+let llmInitialized = false;
+const modelPathMap = new Map<string, string>(); // Map modelAlias to actual file path
 
-function spawnLLMProcess() {
+async function initializeLLM() {
   try {
-    // Determine the path to the utility process script
-    const llmProcessPath = path.join(__dirname, 'llm-process.js');
-    
-    // Spawn the utility process
-    llmProcess = utilityProcess.fork(llmProcessPath);
-    
-    // Create MessageChannel for communication
-    const { port1, port2 } = new MessageChannelMain();
-    llmMessagePort = port1;
-    llmMessagePort2 = port2;
-    
-    // Send the port to the utility process
-    llmProcess.postMessage('init', [port2]);
-    
-    // Set up message handler for utility process
-    port1.on('message', (event) => {
-      const response = event.data;
-      
-      // Forward streaming chunks to renderer via IPC
-      if (response.type === 'chunk') {
-        // Emit to all renderers listening for LLM chunks
-        BrowserWindow.getAllWindows().forEach(window => {
-          window.webContents.send('llm-chunk', response);
-        });
-      } else if (response.type === 'complete' || response.type === 'error' || response.type === 'initialized') {
-        // Forward completion/error/initialization messages
-        BrowserWindow.getAllWindows().forEach(window => {
-          window.webContents.send('llm-response', response);
-        });
-      }
+    // Load @electron/llm - this sets up the utility process automatically
+    // Disable automatic preload injection since we expose electronAi in our own preload.ts
+    await loadElectronLlm({
+      isAutomaticPreloadDisabled: true, // Disable @electron/llm's preload, we handle it in preload.ts
+      getModelPath: (modelAlias: string) => {
+        // Return the mapped path if it exists, otherwise use default location
+        const mappedPath = modelPathMap.get(modelAlias);
+        if (mappedPath) {
+          console.log(`[LLM] Using mapped path for ${modelAlias}: ${mappedPath}`);
+          return mappedPath;
+        }
+        // Default: look in userData/models directory
+        return path.join(app.getPath('userData'), 'models', `${modelAlias}.gguf`);
+      },
     });
-    
-    port1.start();
-    
-    // Handle utility process events
-    llmProcess.on('exit', (code) => {
-      console.log(`LLM utility process exited with code ${code}`);
-      llmProcess = null;
-      llmMessagePort = null;
-      llmMessagePort2 = null;
-    });
-    
-    llmProcess.stderr?.on('data', (data) => {
-      console.error('LLM process stderr:', data.toString());
-    });
-    
-    llmProcess.stdout?.on('data', (data) => {
-      console.log('LLM process stdout:', data.toString());
-    });
-    
-    console.log('LLM utility process spawned successfully');
+    llmInitialized = true;
+    console.log('@electron/llm loaded successfully');
   } catch (error) {
-    console.error('Failed to spawn LLM utility process:', error);
+    console.error('Failed to load @electron/llm:', error);
   }
 }
 
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.on('ready', () => {
-  spawnLLMProcess();
+app.on('ready', async () => {
+  await initializeLLM();
   createWindow();
 });
 
@@ -206,86 +172,14 @@ ipcMain.handle('select-gguf-file', async () => {
 
 // LLM IPC Handlers - Bridge between renderer and utility process
 
-ipcMain.handle('llm-initialize', async (event, modelPath: string) => {
-  if (!llmMessagePort || !llmProcess) {
-    throw new Error('LLM utility process not available');
+// LLM IPC Handlers - Store model path mapping
+ipcMain.handle('llm-register-model-path', async (event, modelAlias: string, modelPath: string) => {
+  if (!llmInitialized) {
+    throw new Error('@electron/llm not loaded');
   }
   
-  const requestId = `init-${Date.now()}-${Math.random()}`;
-  
-  return new Promise((resolve, reject) => {
-    let resolved = false;
-    const webContents = event.sender;
-    
-    // Set up listener for initialization response
-    const responseHandler = (_event: any, response: any) => {
-      // Match by requestId or check if it's an initialization response without requestId
-      if (response.type === 'initialized' && (!response.requestId || response.requestId === requestId)) {
-        if (!resolved) {
-          resolved = true;
-          webContents.removeListener('llm-response', responseHandler);
-          resolve(response.payload);
-        }
-      } else if (response.type === 'error' && (!response.requestId || response.requestId === requestId)) {
-        if (!resolved) {
-          resolved = true;
-          webContents.removeListener('llm-response', responseHandler);
-          reject(new Error(response.payload?.error || 'Initialization failed'));
-        }
-      }
-    };
-    
-    webContents.on('llm-response', responseHandler);
-    
-    // Send initialization message to utility process
-    llmMessagePort.postMessage({
-      type: 'initialize',
-      payload: { modelPath },
-      requestId,
-    });
-    
-    // Timeout after 60 seconds
-    setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        webContents.removeListener('llm-response', responseHandler);
-        reject(new Error('Initialization timeout'));
-      }
-    }, 60000);
-  });
-});
-
-ipcMain.handle('llm-generate', async (event, prompt: string) => {
-  if (!llmMessagePort || !llmProcess) {
-    throw new Error('LLM utility process not available');
-  }
-  
-  const requestId = `gen-${Date.now()}`;
-  
-  // Send generation request to utility process
-  llmMessagePort.postMessage({
-    type: 'generate',
-    payload: { prompt },
-    requestId,
-  });
-  
-  // Return requestId so renderer can listen for chunks
-  return { requestId };
-});
-
-ipcMain.handle('llm-cancel', async () => {
-  if (!llmMessagePort || !llmProcess) {
-    return;
-  }
-  
-  llmMessagePort.postMessage({
-    type: 'cancel',
-  });
-});
-
-// Cleanup on app quit
-app.on('before-quit', () => {
-  if (llmProcess) {
-    llmProcess.kill();
-  }
+  // Store the mapping so getModelPath can return it
+  modelPathMap.set(modelAlias, modelPath);
+  console.log(`Registered model path: ${modelAlias} -> ${modelPath}`);
+  return { success: true };
 });

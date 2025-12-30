@@ -1,5 +1,67 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+// Manually expose @electron/llm's electronAi API
+// This is needed because @electron/llm's auto-injected preload looks for a file that doesn't exist in our build structure
+const electronAi = {
+  create: async (options: any) => {
+    if (!options || typeof options.modelAlias !== 'string') {
+      throw new TypeError('modelAlias is required and must be a string');
+    }
+    return ipcRenderer.invoke('ELECTRON_LLM_CREATE', options);
+  },
+  destroy: async () => ipcRenderer.invoke('ELECTRON_LLM_DESTROY'),
+  prompt: async (input: string = '', options?: any) => {
+    return ipcRenderer.invoke('ELECTRON_LLM_PROMPT', input, options);
+  },
+  promptStreaming: async (input: string = '', options?: any) => {
+    // Create a promise that will resolve with the port from main process
+    return new Promise((resolve) => {
+      ipcRenderer.once('ELECTRON_LLM_PROMPT_STREAMING_PORT', (event: any) => {
+        // Access the port from the event's ports array
+        const [port] = event.ports;
+        // Start the port to receive messages
+        port.start();
+        const iterator = {
+          async next() {
+            const message = await new Promise((resolve, reject) => {
+              port.onmessage = (event: any) => {
+                if (event.data.type === 'error') {
+                  reject(new Error(event.data.error));
+                } else if (event.data.type === 'done') {
+                  resolve({ done: true, value: undefined });
+                } else {
+                  resolve({ value: event.data.chunk, done: false });
+                }
+              };
+            });
+            return message;
+          },
+          async return() {
+            port.close();
+            return { done: true, value: undefined };
+          },
+          async throw(error: any) {
+            port.close();
+            throw error;
+          },
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+        };
+        resolve(iterator);
+      });
+      // Request streaming from main process
+      ipcRenderer.send('ELECTRON_LLM_PROMPT_STREAMING_REQUEST', input, options);
+    });
+  },
+  abortRequest: (requestUUID: string) => {
+    return ipcRenderer.invoke('ELECTRON_LLM_ABORT_REQUEST', { requestUUID });
+  },
+};
+
+// Expose electronAi to window
+contextBridge.exposeInMainWorld('electronAi', electronAi);
+
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -7,22 +69,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   selectGGUFFile: () => ipcRenderer.invoke('select-gguf-file'),
   
-  // LLM methods
-  llmInitialize: (modelPath: string) => ipcRenderer.invoke('llm-initialize', modelPath),
-  llmGenerate: (prompt: string) => ipcRenderer.invoke('llm-generate', prompt),
-  llmCancel: () => ipcRenderer.invoke('llm-cancel'),
-  
-  // LLM event listeners for streaming
-  llmOnChunk: (callback: (chunk: { token: string; text: string; requestId?: string }) => void) => {
-    ipcRenderer.on('llm-chunk', (event, data) => callback(data.payload));
-  },
-  llmOnResponse: (callback: (response: { type: string; payload?: any; requestId?: string }) => void) => {
-    ipcRenderer.on('llm-response', (event, data) => callback(data));
-  },
-  llmRemoveListeners: () => {
-    ipcRenderer.removeAllListeners('llm-chunk');
-    ipcRenderer.removeAllListeners('llm-response');
-  },
+  // LLM methods - @electron/llm provides window.electronAi directly
+  // We just need to register the model path
+  llmRegisterModelPath: (modelAlias: string, modelPath: string) => ipcRenderer.invoke('llm-register-model-path', modelAlias, modelPath),
 });
 
 // TypeScript type definitions for the exposed API
@@ -49,12 +98,7 @@ export interface ElectronAPI {
     }>;
   } | null>;
   selectGGUFFile: () => Promise<string | null>;
-  llmInitialize: (modelPath: string) => Promise<any>;
-  llmGenerate: (prompt: string) => Promise<{ requestId: string }>;
-  llmCancel: () => Promise<void>;
-  llmOnChunk: (callback: (chunk: { token: string; text: string; requestId?: string }) => void) => void;
-  llmOnResponse: (callback: (response: { type: string; payload?: any; requestId?: string }) => void) => void;
-  llmRemoveListeners: () => void;
+  llmRegisterModelPath: (modelAlias: string, modelPath: string) => Promise<{ success: boolean }>;
 }
 
 declare global {
