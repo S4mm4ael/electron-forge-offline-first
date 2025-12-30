@@ -1,5 +1,7 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'node:path';
+import { readdir } from 'node:fs/promises';
+import os from 'node:os';
 import started from 'electron-squirrel-startup';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
@@ -10,10 +12,12 @@ if (started) {
 const createWindow = () => {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
+    width: 1200,
+    height: 800,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
     },
   });
 
@@ -52,5 +56,66 @@ app.on('activate', () => {
   }
 });
 
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.
+// IPC Handlers
+
+// System Health: Get RAM and CPU stats
+ipcMain.handle('get-system-stats', () => {
+  const totalMemory = os.totalmem();
+  const freeMemory = os.freemem();
+  const usedMemory = totalMemory - freeMemory;
+  const memoryUsagePercent = (usedMemory / totalMemory) * 100;
+  
+  const cpus = os.cpus();
+  const cpuModel = cpus[0]?.model || 'Unknown';
+  const cpuCount = cpus.length;
+  
+  // Calculate CPU load (simplified - average of all cores)
+  const cpuLoad = cpus.reduce((acc, cpu) => {
+    const total = Object.values(cpu.times).reduce((sum, time) => sum + time, 0);
+    const idle = cpu.times.idle;
+    return acc + (1 - idle / total);
+  }, 0) / cpuCount * 100;
+
+  return {
+    memory: {
+      total: totalMemory,
+      used: usedMemory,
+      free: freeMemory,
+      usagePercent: memoryUsagePercent,
+    },
+    cpu: {
+      model: cpuModel,
+      cores: cpuCount,
+      loadPercent: cpuLoad,
+    },
+  };
+});
+
+// File System: Select folder and list files
+ipcMain.handle('select-folder', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+  });
+
+  if (result.canceled) {
+    return null;
+  }
+
+  const folderPath = result.filePaths[0];
+  
+  try {
+    const files = await readdir(folderPath, { withFileTypes: true });
+    const fileList = files.map(file => ({
+      name: file.name,
+      isDirectory: file.isDirectory(),
+      path: path.join(folderPath, file.name),
+    }));
+
+    return {
+      folderPath,
+      files: fileList,
+    };
+  } catch (error) {
+    throw new Error(`Failed to read directory: ${error}`);
+  }
+});
