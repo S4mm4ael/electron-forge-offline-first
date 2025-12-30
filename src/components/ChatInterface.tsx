@@ -33,6 +33,19 @@ export const ChatInterface: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Cleanup: destroy LLM session when component unmounts
+  useEffect(() => {
+    return () => {
+      // Cleanup on unmount
+      const electronAi = (window as any).electronAi;
+      if (electronAi && isInitialized) {
+        electronAi.destroy().catch((err: any) => {
+          console.error('Error destroying LLM on unmount:', err);
+        });
+      }
+    };
+  }, [isInitialized]);
+
   // Check if @electron/llm is loaded
   useEffect(() => {
     if ((window as any).electronAi) {
@@ -54,6 +67,28 @@ export const ChatInterface: React.FC = () => {
     }
   };
 
+  const handleReset = async () => {
+    try {
+      const electronAi = (window as any).electronAi;
+      if (electronAi && isInitialized) {
+        console.log('Resetting LLM session...');
+        await electronAi.destroy();
+        console.log('LLM session destroyed');
+      }
+    } catch (err) {
+      console.error('Error destroying LLM session:', err);
+    }
+    
+    // Clear all state
+    setMessages([]);
+    setIsInitialized(false);
+    setIsGenerating(false);
+    setStatus(null);
+    setError(null);
+    streamingMessageRef.current = null;
+    setCurrentRequestId(null);
+  };
+
   const handleInitialize = async () => {
     if (!modelPath.trim()) {
       setError('Please provide a model path');
@@ -70,11 +105,25 @@ export const ChatInterface: React.FC = () => {
         throw new Error('@electron/llm not loaded. Please restart the app.');
       }
       
+      // Destroy existing model if any to reset conversation history
+      if (isInitialized) {
+        console.log('Destroying existing model to reset state...');
+        try {
+          await electronAi.destroy();
+        } catch (err) {
+          console.warn('Error destroying existing model (may not exist):', err);
+        }
+      }
+      
+      // Clear messages when reinitializing
+      setMessages([]);
+      
       // Register the model path with the main process
       await window.electronAPI.llmRegisterModelPath(selectedModel.alias, modelPath);
       
       // Create the model using the alias
       // @electron/llm will use getModelPath to resolve the alias to the actual file path
+      console.log('Creating new LLM model instance...');
       await electronAi.create({
         modelAlias: selectedModel.alias,
         systemPrompt: 'You are a helpful AI assistant. Provide clear, concise answers. Do not repeat yourself. Each response should be unique and relevant to the conversation.',
@@ -82,6 +131,7 @@ export const ChatInterface: React.FC = () => {
         topK: topK,
       });
       
+      console.log('LLM model initialized successfully');
       setIsInitialized(true);
       setIsInitializing(false);
       setError(null);
@@ -151,6 +201,20 @@ export const ChatInterface: React.FC = () => {
     const sentences = text.split(/[.!?]\s+/).filter(s => s.trim().length > 10);
     if (sentences.length < threshold + 1) return false;
     
+    // Check for phrase-level repetition (e.g., "Paris is" repeated many times)
+    const words = textLower.split(/\s+/);
+    const phraseCounts = new Map<string, number>();
+    
+    // Check for repeated phrases of 3-5 words
+    for (let i = 0; i < words.length - 2; i++) {
+      const phrase = words.slice(i, i + 3).join(' ').toLowerCase();
+      phraseCounts.set(phrase, (phraseCounts.get(phrase) || 0) + 1);
+      if (phraseCounts.get(phrase)! > 3) {
+        console.log('⚠️ Phrase repetition detected:', phrase, 'appears', phraseCounts.get(phrase), 'times');
+        return true; // Same phrase repeated too many times
+      }
+    }
+    
     // Check if any sentence repeats a previous one (more aggressive)
     for (let i = 1; i < sentences.length; i++) {
       const currentSentence = sentences[i].trim().toLowerCase();
@@ -163,6 +227,7 @@ export const ChatInterface: React.FC = () => {
               (currentSentence.length > 40 && prevSentence.length > 40 &&
                currentSentence.substring(0, Math.min(60, currentSentence.length)) === 
                prevSentence.substring(0, Math.min(60, prevSentence.length)))) {
+            console.log('⚠️ Sentence repetition detected:', currentSentence.substring(0, 80));
             return true; // Internal repetition detected
           }
         }
@@ -188,7 +253,28 @@ export const ChatInterface: React.FC = () => {
       isStreaming: true,
     };
 
-    setMessages((prev) => [...prev, userMessage, assistantMessage]);
+    setMessages((prev) => {
+      const updated = [...prev, userMessage, assistantMessage];
+      
+      // Log conversation state for debugging (after adding new messages)
+      console.log('=== LLM Request ===');
+      console.log('Current message:', userMessage.content);
+      console.log('Message history (before current):', prev.map(m => ({
+        role: m.role,
+        content: m.content.substring(0, 100) + (m.content.length > 100 ? '...' : ''),
+        id: m.id
+      })));
+      console.log('All messages (including current):', updated.map(m => ({
+        role: m.role,
+        content: m.content.substring(0, 100) + (m.content.length > 100 ? '...' : ''),
+        id: m.id,
+        isStreaming: m.isStreaming
+      })));
+      console.log('Temperature:', temperature, 'TopK:', topK);
+      console.log('Total messages in history:', prev.length, '(before current),', updated.length, '(including current)');
+      
+      return updated;
+    });
     setInput('');
     setIsGenerating(true);
     setStatus(null); // Clear previous status when starting new generation
@@ -213,6 +299,8 @@ export const ChatInterface: React.FC = () => {
         temperature: temperature,
         topK: topK,
       });
+      
+      console.log('Stream started, waiting for response...');
       
       let repetitionDetected = false;
       let streamAborted = false;
@@ -242,6 +330,8 @@ export const ChatInterface: React.FC = () => {
                   if (userCount > 1 || assistantCount > 1) {
                     repetitionDetected = true;
                     streamAborted = true;
+                    console.warn('⚠️ Repetition detected: Multiple User/Assistant patterns found');
+                    console.log('Response so far:', newContent.substring(0, 500));
                     setStatus('Stopped: Conversation repetition detected');
                     setIsGenerating(false); // Immediately enable input
                     return { ...msg, content: newContent, isStreaming: false };
@@ -254,6 +344,8 @@ export const ChatInterface: React.FC = () => {
                       if (detectRepetition(newContent, messages)) {
                         repetitionDetected = true;
                         streamAborted = true;
+                        console.warn('⚠️ Repetition detected: Content matches previous messages');
+                        console.log('Response so far:', newContent.substring(0, 500));
                         setStatus('Stopped: Repetition detected');
                         setIsGenerating(false); // Immediately enable input
                         return { ...msg, content: newContent, isStreaming: false };
@@ -261,7 +353,62 @@ export const ChatInterface: React.FC = () => {
                     }
                   }
                   
-                  return { ...msg, content: newContent };
+                  // Filter out special tokens and formatting markers that the model might output
+                  let cleanedContent = newContent;
+                  
+                  // Remove common chat template tokens (like "ยวกuserยวก", "ยวกassistantยวก", etc.)
+                  // These are special tokens that some models output as part of their chat format
+                  cleanedContent = cleanedContent.replace(/ยวก(user|assistant|system)ยวก/gi, '');
+                  cleanedContent = cleanedContent.replace(/ยวก/g, ''); // Remove standalone tokens
+                  
+                  // Remove problematic character patterns (like "弋" repeated many times)
+                  // This appears to be a special token or encoding issue
+                  if (cleanedContent.match(/弋{10,}/)) {
+                    // If we see 10+ "弋" characters in a row, stop and remove them
+                    console.warn('⚠️ Detected excessive "弋" characters - likely a token loop');
+                    cleanedContent = cleanedContent.replace(/弋+/g, '');
+                    repetitionDetected = true;
+                    streamAborted = true;
+                    setStatus('Stopped: Invalid token pattern detected');
+                    setIsGenerating(false);
+                    return { ...msg, content: cleanedContent.replace(/弋+/g, ''), isStreaming: false };
+                  }
+                  
+                  // Remove other potential formatting markers
+                  cleanedContent = cleanedContent.replace(/<\|(user|assistant|system)\|>/gi, '');
+                  cleanedContent = cleanedContent.replace(/\[(user|assistant|system)\]/gi, '');
+                  cleanedContent = cleanedContent.replace(/\{\{(user|assistant|system)\}\}/gi, '');
+                  
+                  // Remove common special tokens
+                  cleanedContent = cleanedContent.replace(/<\|endoftext\|>/gi, '');
+                  cleanedContent = cleanedContent.replace(/<\|im_start\|>/gi, '');
+                  cleanedContent = cleanedContent.replace(/<\|im_end\|>/gi, '');
+                  
+                  // Check for excessive repetition of any single character (likely a token loop)
+                  const charCounts = new Map<string, number>();
+                  for (const char of cleanedContent.slice(-200)) { // Check last 200 chars
+                    charCounts.set(char, (charCounts.get(char) || 0) + 1);
+                  }
+                  for (const [char, count] of charCounts.entries()) {
+                    if (count > 50 && cleanedContent.endsWith(char.repeat(count))) {
+                      // If a single character appears 50+ times at the end, it's likely a loop
+                      console.warn(`⚠️ Detected character loop: "${char}" repeated ${count} times`);
+                      repetitionDetected = true;
+                      streamAborted = true;
+                      setStatus(`Stopped: Character loop detected (${char})`);
+                      setIsGenerating(false);
+                      // Remove the repeated characters
+                      cleanedContent = cleanedContent.replace(new RegExp(`${char}+$`), '');
+                      return { ...msg, content: cleanedContent, isStreaming: false };
+                    }
+                  }
+                  
+                  // Log if we detect and remove these tokens
+                  if (cleanedContent !== newContent && !repetitionDetected) {
+                    console.warn('⚠️ Filtered special tokens from response');
+                  }
+                  
+                  return { ...msg, content: cleanedContent };
                 }
                 return msg;
               });
@@ -279,36 +426,52 @@ export const ChatInterface: React.FC = () => {
       if (streamingMessageRef.current) {
         const currentId = streamingMessageRef.current.id;
         
-        // If repetition was detected, we already updated the message, just finalize it
-        if (repetitionDetected) {
-          setMessages((prev) =>
-            prev
-              .filter((msg) => msg !== null && msg !== undefined)
-              .map((msg) =>
-                msg.id === currentId
-                  ? { ...msg, isStreaming: false }
-                  : msg
-              )
-          );
-        } else {
-          // Normal completion - check for repetition one final time
-          setStatus(null); // Clear status on successful completion
-          setMessages((prev) =>
-            prev
-              .filter((msg) => msg !== null && msg !== undefined)
-              .map((msg) => {
-                if (msg.id === currentId) {
-                  // Final check for repetition in the complete message
-                  if (detectRepetition(msg.content, messages)) {
-                    setStatus('Note: Response may contain repetition');
-                    return { ...msg, isStreaming: false };
-                  }
-                  return { ...msg, isStreaming: false };
-                }
-                return msg;
-              })
-          );
+        // Log final response
+        const finalMessage = messages.find(m => m.id === currentId);
+        if (finalMessage) {
+          console.log('=== LLM Response Complete ===');
+          console.log('Response length:', finalMessage.content.length);
+          console.log('Response preview:', finalMessage.content.substring(0, 200) + '...');
+          console.log('Repetition detected:', repetitionDetected);
         }
+        
+        // Clean up any special tokens in the final message
+        setMessages((prev) =>
+          prev
+            .filter((msg) => msg !== null && msg !== undefined)
+            .map((msg) => {
+              if (msg.id === currentId) {
+                let cleanedContent = msg.content;
+                
+                // Final cleanup of special tokens
+                cleanedContent = cleanedContent.replace(/ยวก(user|assistant|system)ยวก/gi, '');
+                cleanedContent = cleanedContent.replace(/ยวก/g, '');
+                cleanedContent = cleanedContent.replace(/弋+/g, ''); // Remove "弋" character loops
+                cleanedContent = cleanedContent.replace(/<\|(user|assistant|system)\|>/gi, '');
+                cleanedContent = cleanedContent.replace(/\[(user|assistant|system)\]/gi, '');
+                cleanedContent = cleanedContent.replace(/\{\{(user|assistant|system)\}\}/gi, '');
+                cleanedContent = cleanedContent.replace(/<\|endoftext\|>/gi, '');
+                cleanedContent = cleanedContent.replace(/<\|im_start\|>/gi, '');
+                cleanedContent = cleanedContent.replace(/<\|im_end\|>/gi, '');
+                
+                // Remove any trailing repeated characters (likely token loops)
+                cleanedContent = cleanedContent.replace(/(.)\1{50,}$/, ''); // Remove 50+ repeated chars at end
+                
+                // If repetition was detected, we already updated the message, just finalize it
+                if (repetitionDetected) {
+                  return { ...msg, content: cleanedContent, isStreaming: false };
+                } else {
+                  // Normal completion - check for repetition one final time
+                  setStatus(null); // Clear status on successful completion
+                  if (detectRepetition(cleanedContent, messages)) {
+                    setStatus('Note: Response may contain repetition');
+                  }
+                  return { ...msg, content: cleanedContent, isStreaming: false };
+                }
+              }
+              return msg;
+            })
+        );
         
         streamingMessageRef.current = null;
       } else if (!repetitionDetected) {
@@ -473,6 +636,27 @@ export const ChatInterface: React.FC = () => {
         >
           {isInitialized ? '✓ Initialized' : isInitializing ? 'Initializing...' : 'Initialize Model'}
         </button>
+        
+        {isInitialized && (
+          <button
+            onClick={handleReset}
+            disabled={isGenerating || isInitializing}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#ff6b6b',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: isGenerating || isInitializing ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              opacity: isGenerating || isInitializing ? 0.6 : 1,
+            }}
+            title="Reset conversation and clear LLM session state"
+          >
+            Reset
+          </button>
+        )}
       </div>
 
       {error && (
