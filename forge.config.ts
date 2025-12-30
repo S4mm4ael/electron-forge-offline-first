@@ -34,6 +34,11 @@ const config: ForgeConfig = {
           config: 'vite.preload.config.ts',
           target: 'preload',
         },
+        {
+          entry: 'src/llm-process.ts',
+          config: 'vite.main.config.ts',
+          target: 'utility',
+        },
       ],
       renderer: [
         {
