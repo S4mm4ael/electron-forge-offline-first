@@ -22,6 +22,9 @@ export const ChatInterface: React.FC = () => {
   const [modelPath, setModelPath] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [currentRequestId, setCurrentRequestId] = useState<string | null>(null);
+  const [temperature, setTemperature] = useState(0.4); // Lower default for less repetition
+  const [topK, setTopK] = useState(30);
+  const [status, setStatus] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingMessageRef = useRef<Message | null>(null);
 
@@ -74,7 +77,9 @@ export const ChatInterface: React.FC = () => {
       // @electron/llm will use getModelPath to resolve the alias to the actual file path
       await electronAi.create({
         modelAlias: selectedModel.alias,
-        systemPrompt: 'You are a helpful AI assistant.',
+        systemPrompt: 'You are a helpful AI assistant. Provide clear, concise answers. Do not repeat yourself. Each response should be unique and relevant to the conversation.',
+        temperature: temperature,
+        topK: topK,
       });
       
       setIsInitialized(true);
@@ -84,6 +89,87 @@ export const ChatInterface: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Failed to initialize model');
       setIsInitializing(false);
     }
+  };
+
+  // Helper function to detect repetition - more aggressive detection
+  const detectRepetition = (text: string, previousMessages: Message[] = [], threshold: number = 1): boolean => {
+    if (text.length < 30) return false; // Too short to detect repetition
+    
+    const textLower = text.toLowerCase();
+    
+    // Check if the response contains "User:" or "Assistant:" patterns (indicates it's repeating conversation)
+    if (textLower.includes('user:') || textLower.includes('assistant:')) {
+      // Count how many times these patterns appear
+      const userMatches = (textLower.match(/user:/g) || []).length;
+      const assistantMatches = (textLower.match(/assistant:/g) || []).length;
+      
+      // If we see multiple "User:" or "Assistant:" patterns, it's likely repeating conversation
+      if (userMatches > 1 || assistantMatches > 1) {
+        return true;
+      }
+    }
+    
+    // Check if the response is repeating previous messages
+    if (previousMessages.length > 0) {
+      // Check if the response contains large chunks from previous messages
+      for (const msg of previousMessages.slice(-4)) {
+        if (msg.content && msg.content.length > 30) {
+          const msgLower = msg.content.toLowerCase();
+          
+          // Extract a significant chunk from the previous message (first 200 chars)
+          const msgChunk = msgLower.substring(0, Math.min(200, msgLower.length));
+          
+          // Check if this chunk appears in the current response
+          if (textLower.includes(msgChunk) && msgChunk.length > 50) {
+            return true; // Repeating previous message
+          }
+          
+          // Also check for sentence-level repetition
+          const msgSentences = msgLower.split(/[.!?]\s+/).filter(s => s.trim().length > 20);
+          const textSentences = textLower.split(/[.!?]\s+/).filter(s => s.trim().length > 20);
+          
+          // If even 1 sentence from a previous message appears, it's likely repetition
+          for (const msgSentence of msgSentences) {
+            if (msgSentence.length > 30) {
+              // Check for exact or near-exact sentence matches
+              if (textSentences.some(textSentence => {
+                const similarity = msgSentence === textSentence || 
+                                 (msgSentence.length > 40 && textSentence.length > 40 && 
+                                  msgSentence.substring(0, Math.min(80, msgSentence.length)) === 
+                                  textSentence.substring(0, Math.min(80, textSentence.length)));
+                return similarity;
+              })) {
+                return true; // Repeating previous message
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Split into sentences and check for internal repetition
+    const sentences = text.split(/[.!?]\s+/).filter(s => s.trim().length > 10);
+    if (sentences.length < threshold + 1) return false;
+    
+    // Check if any sentence repeats a previous one (more aggressive)
+    for (let i = 1; i < sentences.length; i++) {
+      const currentSentence = sentences[i].trim().toLowerCase();
+      // Check against all previous sentences
+      for (let j = 0; j < i; j++) {
+        const prevSentence = sentences[j].trim().toLowerCase();
+        if (currentSentence.length > 20 && prevSentence.length > 20) {
+          // Check for exact or near-exact matches
+          if (currentSentence === prevSentence || 
+              (currentSentence.length > 40 && prevSentence.length > 40 &&
+               currentSentence.substring(0, Math.min(60, currentSentence.length)) === 
+               prevSentence.substring(0, Math.min(60, prevSentence.length)))) {
+            return true; // Internal repetition detected
+          }
+        }
+      }
+    }
+    
+    return false;
   };
 
   const handleSend = async () => {
@@ -105,6 +191,7 @@ export const ChatInterface: React.FC = () => {
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
     setInput('');
     setIsGenerating(true);
+    setStatus(null); // Clear previous status when starting new generation
     streamingMessageRef.current = assistantMessage;
 
     try {
@@ -114,37 +201,89 @@ export const ChatInterface: React.FC = () => {
         throw new Error('@electron/llm not available');
       }
 
+      // @electron/llm's session should maintain conversation history automatically
+      // We'll just send the current user message and let the session handle context
+      // This prevents the model from repeating the conversation context
+      const promptText = userMessage.content;
+      const conversationContext = ''; // Not used, but kept for repetition detection
+
       // Use promptStreaming for real-time streaming
-      const stream = await electronAi.promptStreaming(userMessage.content);
+      // Pass generation options to control response quality
+      const stream = await electronAi.promptStreaming(promptText, {
+        temperature: temperature,
+        topK: topK,
+      });
+      
+      let repetitionDetected = false;
       
       // Stream the response
       for await (const chunk of stream) {
-        if (streamingMessageRef.current) {
+        if (streamingMessageRef.current && !repetitionDetected) {
           const currentId = streamingMessageRef.current.id;
-          setMessages((prev) =>
-            prev
+          setMessages((prev) => {
+            const updated = prev
               .filter((msg) => msg !== null && msg !== undefined)
-              .map((msg) =>
-                msg.id === currentId
-                  ? { ...msg, content: msg.content + chunk }
-                  : msg
-              )
-          );
+              .map((msg) => {
+                if (msg.id === currentId) {
+                  const newContent = msg.content + chunk;
+                  
+                  // Immediate check for conversation pattern repetition (most common issue)
+                  const contentLower = newContent.toLowerCase();
+                  const userCount = (contentLower.match(/user:/g) || []).length;
+                  const assistantCount = (contentLower.match(/assistant:/g) || []).length;
+                  
+                  // If we see multiple "User:" or "Assistant:" patterns, stop immediately
+                  if (userCount > 1 || assistantCount > 1) {
+                    repetitionDetected = true;
+                    setStatus('Stopped: Conversation repetition detected');
+                    return { ...msg, content: newContent, isStreaming: false };
+                  }
+                  
+                  // Check for repetition more frequently and earlier
+                  if (newContent.length > 50) {
+                    // Check every 30 characters to catch repetition early
+                    if (newContent.length % 30 === 0 || newContent.length < 200) {
+                      if (detectRepetition(newContent, messages)) {
+                        repetitionDetected = true;
+                        setStatus('Stopped: Repetition detected');
+                        return { ...msg, content: newContent, isStreaming: false };
+                      }
+                    }
+                  }
+                  
+                  return { ...msg, content: newContent };
+                }
+                return msg;
+              });
+            return updated;
+          });
+          
+          // If repetition detected, break the loop
+          if (repetitionDetected) {
+            break;
+          }
         }
       }
 
       // Generation complete
       setIsGenerating(false);
+      setStatus(null); // Clear status on successful completion
       if (streamingMessageRef.current) {
         const currentId = streamingMessageRef.current.id;
         setMessages((prev) =>
           prev
             .filter((msg) => msg !== null && msg !== undefined)
-            .map((msg) =>
-              msg.id === currentId
-                ? { ...msg, isStreaming: false }
-                : msg
-            )
+            .map((msg) => {
+              if (msg.id === currentId) {
+                // Final check for repetition in the complete message
+                if (detectRepetition(msg.content, messages)) {
+                  setStatus('Note: Response may contain repetition');
+                  return { ...msg, isStreaming: false };
+                }
+                return { ...msg, isStreaming: false };
+              }
+              return msg;
+            })
         );
         streamingMessageRef.current = null;
       }
@@ -161,6 +300,7 @@ export const ChatInterface: React.FC = () => {
     // We'll just stop the generation state
     setIsGenerating(false);
     setCurrentRequestId(null);
+    setStatus('Generation cancelled');
     if (streamingMessageRef.current) {
       const currentId = streamingMessageRef.current.id;
       setMessages((prev) =>
@@ -168,7 +308,7 @@ export const ChatInterface: React.FC = () => {
           .filter((msg) => msg !== null && msg !== undefined) // Filter out null/undefined messages
           .map((msg) =>
             msg.id === currentId
-              ? { ...msg, isStreaming: false, content: msg.content + '\n\n[Generation cancelled]' }
+              ? { ...msg, isStreaming: false }
               : msg
           )
       );
@@ -186,6 +326,36 @@ export const ChatInterface: React.FC = () => {
   return (
     <div style={{ padding: '20px', backgroundColor: '#1e1e1e', borderRadius: '8px', display: 'flex', flexDirection: 'column', height: '600px' }}>
       <h3 style={{ color: '#fff', marginBottom: '15px' }}>AI Chat (Local LLM)</h3>
+
+      {/* Generation Parameters */}
+      {isInitialized && (
+        <div style={{ marginBottom: '10px', padding: '10px', backgroundColor: '#2d2d2d', borderRadius: '4px', display: 'flex', gap: '15px', flexWrap: 'wrap', fontSize: '12px' }}>
+          <label style={{ color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            Temperature: {temperature.toFixed(1)}
+            <input
+              type="range"
+              min="0.1"
+              max="1.5"
+              step="0.1"
+              value={temperature}
+              onChange={(e) => setTemperature(parseFloat(e.target.value))}
+              style={{ width: '100px' }}
+            />
+          </label>
+          <label style={{ color: '#fff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            TopK: {topK}
+            <input
+              type="range"
+              min="10"
+              max="100"
+              step="5"
+              value={topK}
+              onChange={(e) => setTopK(parseInt(e.target.value))}
+              style={{ width: '100px' }}
+            />
+          </label>
+        </div>
+      )}
 
       {/* Model Selection and Initialization */}
       <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -392,6 +562,19 @@ export const ChatInterface: React.FC = () => {
           </button>
         )}
       </div>
+      
+      {/* Status indicator */}
+      {status && (
+        <div style={{ 
+          marginTop: '8px', 
+          color: '#888', 
+          fontSize: '12px', 
+          fontStyle: 'italic',
+          paddingLeft: '4px'
+        }}>
+          {status}
+        </div>
+      )}
     </div>
   );
 };
