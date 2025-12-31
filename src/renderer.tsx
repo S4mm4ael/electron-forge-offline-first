@@ -2,6 +2,8 @@ import { createRoot } from 'react-dom/client';
 import React, { useState, useEffect } from 'react';
 import { SystemHealth } from './components/SystemHealth';
 import { ChatInterface } from './components/ChatInterface';
+import { P2PStatus } from './components/P2PStatus';
+import { WalletManager } from './components/WalletManager';
 import './index.css';
 
 const App: React.FC = () => {
@@ -67,7 +69,12 @@ const App: React.FC = () => {
         <div style={{ 
           flexShrink: 0,
           width: isSmallScreen ? '100%' : 'auto',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          flexWrap: 'wrap',
         }}>
+          <P2PStatus />
           <SystemHealth />
         </div>
       </header>
@@ -77,7 +84,7 @@ const App: React.FC = () => {
         flex: 1,
         padding: isSmallScreen ? '10px' : '20px',
         display: 'flex',
-        flexDirection: 'column',
+        flexDirection: isSmallScreen ? 'column' : 'row',
         gap: isSmallScreen ? '10px' : '20px',
         width: '100%',
         height: '100%',
@@ -85,7 +92,25 @@ const App: React.FC = () => {
         overflow: 'hidden',
         minHeight: 0, // Important for flex children to shrink
       }}>
-        <ChatInterface />
+        <div style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          minWidth: 0,
+          minHeight: 0,
+        }}>
+          <ChatInterface />
+        </div>
+        <div style={{
+          width: isSmallScreen ? '100%' : '350px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '20px',
+          minHeight: 0,
+          overflowY: 'auto',
+        }}>
+          <WalletManager />
+        </div>
       </main>
     </div>
   );

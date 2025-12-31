@@ -45,6 +45,11 @@ const config: ForgeConfig = {
           config: 'vite.preload.config.ts',
           target: 'preload',
         },
+        {
+          entry: 'src/p2p-process.ts',
+          config: 'vite.p2p-process.config.ts',
+          target: 'main',
+        },
       ],
       renderer: [
         {

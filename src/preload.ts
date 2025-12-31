@@ -72,6 +72,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // LLM methods - @electron/llm provides window.electronAi directly
   // We just need to register the model path
   llmRegisterModelPath: (modelAlias: string, modelPath: string) => ipcRenderer.invoke('llm-register-model-path', modelAlias, modelPath),
+  
+  // P2P methods
+  p2pGetPeerCount: () => ipcRenderer.invoke('p2p-get-peer-count'),
+  p2pGetPeers: () => ipcRenderer.invoke('p2p-get-peers'),
+  p2pStart: () => ipcRenderer.invoke('p2p-start'),
+  p2pStop: () => ipcRenderer.invoke('p2p-stop'),
+  
+  // Wallet methods
+  walletCreate: () => ipcRenderer.invoke('wallet-create'),
+  walletGetAddress: () => ipcRenderer.invoke('wallet-get-address'),
+  walletHasWallet: () => ipcRenderer.invoke('wallet-has-wallet'),
+  walletIsEncryptionAvailable: () => ipcRenderer.invoke('wallet-is-encryption-available'),
 });
 
 // TypeScript type definitions for the exposed API
@@ -99,6 +111,18 @@ export interface ElectronAPI {
   } | null>;
   selectGGUFFile: () => Promise<string | null>;
   llmRegisterModelPath: (modelAlias: string, modelPath: string) => Promise<{ success: boolean }>;
+  
+  // P2P methods
+  p2pGetPeerCount: () => Promise<number>;
+  p2pGetPeers: () => Promise<string[]>;
+  p2pStart: () => Promise<{ success: boolean }>;
+  p2pStop: () => Promise<{ success: boolean }>;
+  
+  // Wallet methods
+  walletCreate: () => Promise<{ address: string }>;
+  walletGetAddress: () => Promise<string | null>;
+  walletHasWallet: () => Promise<boolean>;
+  walletIsEncryptionAvailable: () => Promise<boolean>;
 }
 
 declare global {

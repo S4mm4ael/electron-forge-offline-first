@@ -4,6 +4,8 @@ import path from 'node:path';
 import { readdir } from 'node:fs/promises';
 import os from 'node:os';
 import started from 'electron-squirrel-startup';
+import { P2PManager } from './p2p/p2p-manager';
+import { WalletManager } from './wallet/wallet-manager';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -39,6 +41,12 @@ const createWindow = () => {
 let llmInitialized = false;
 const modelPathMap = new Map<string, string>(); // Map modelAlias to actual file path
 
+// P2P Manager
+const p2pManager = new P2PManager();
+
+// Wallet Manager
+const walletManager = new WalletManager();
+
 async function initializeLLM() {
   try {
     // Load @electron/llm - this sets up the utility process automatically
@@ -68,15 +76,41 @@ async function initializeLLM() {
 // Some APIs can only be used after this event occurs.
 app.on('ready', async () => {
   await initializeLLM();
+  
+  // Initialize P2P manager
+  try {
+    await p2pManager.start();
+    await p2pManager.startP2PNode();
+    console.log('[Main] P2P manager initialized');
+  } catch (error) {
+    console.error('[Main] Failed to initialize P2P manager:', error);
+  }
+  
   createWindow();
 });
 
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
+app.on('window-all-closed', async () => {
+  // Cleanup P2P manager
+  try {
+    await p2pManager.stop();
+  } catch (error) {
+    console.error('[Main] Error stopping P2P manager:', error);
+  }
+  
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+app.on('before-quit', async () => {
+  // Ensure P2P manager is stopped before quit
+  try {
+    await p2pManager.stop();
+  } catch (error) {
+    console.error('[Main] Error stopping P2P manager:', error);
   }
 });
 
@@ -182,4 +216,82 @@ ipcMain.handle('llm-register-model-path', async (event, modelAlias: string, mode
   modelPathMap.set(modelAlias, modelPath);
   console.log(`Registered model path: ${modelAlias} -> ${modelPath}`);
   return { success: true };
+});
+
+// P2P IPC Handlers
+ipcMain.handle('p2p-get-peer-count', async () => {
+  try {
+    return p2pManager.getCurrentPeerCount();
+  } catch (error) {
+    console.error('[Main] Error getting peer count:', error);
+    return 0;
+  }
+});
+
+ipcMain.handle('p2p-get-peers', async () => {
+  try {
+    return p2pManager.getCurrentPeers();
+  } catch (error) {
+    console.error('[Main] Error getting peers:', error);
+    return [];
+  }
+});
+
+ipcMain.handle('p2p-start', async () => {
+  try {
+    await p2pManager.startP2PNode();
+    return { success: true };
+  } catch (error) {
+    console.error('[Main] Error starting P2P node:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('p2p-stop', async () => {
+  try {
+    await p2pManager.stopP2PNode();
+    return { success: true };
+  } catch (error) {
+    console.error('[Main] Error stopping P2P node:', error);
+    throw error;
+  }
+});
+
+// Wallet IPC Handlers
+ipcMain.handle('wallet-create', async () => {
+  try {
+    const result = await walletManager.createWallet();
+    return result;
+  } catch (error) {
+    console.error('[Main] Error creating wallet:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('wallet-get-address', async () => {
+  try {
+    const address = await walletManager.getWalletAddress();
+    return address;
+  } catch (error) {
+    console.error('[Main] Error getting wallet address:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('wallet-has-wallet', async () => {
+  try {
+    return await walletManager.hasWallet();
+  } catch (error) {
+    console.error('[Main] Error checking wallet:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('wallet-is-encryption-available', async () => {
+  try {
+    return walletManager.isEncryptionAvailable();
+  } catch (error) {
+    console.error('[Main] Error checking encryption availability:', error);
+    return false;
+  }
 });
